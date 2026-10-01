@@ -327,6 +327,14 @@ FIPS_DB = {
 }
 
 
+def _doc_digits(number: str) -> str:
+    """'RU2804073C1' / 'RU 2 804 073' / '2804073' → '2804073' (без кода вида C1/U1)."""
+    n = re.sub(r"[\s\u00a0]", "", number or "").upper()
+    n = re.sub(r"^(RU|SU)", "", n)
+    m = re.match(r"\d+", n)
+    return m.group(0) if m else ""
+
+
 def _fips_field(text: str, code: str) -> str:
     """Извлекает значение поля с INID-кодом, напр. (73) Патентообладатель(и): ..."""
     m = re.search(rf"\({code}\)\s*([^:]{{0,80}}:)?\s*(.+?)(?=\(\d{{2}}\)|Реферат|Формула|$)", text, re.S)
@@ -335,7 +343,7 @@ def _fips_field(text: str, code: str) -> str:
 
 async def _fips_fetch(number: str, kind: str) -> dict[str, Any]:
     db = FIPS_DB.get(kind, kind)
-    digits = re.sub(r"\D", "", number)
+    digits = _doc_digits(number)
     if not digits:
         raise SourceError("Номер документа должен содержать цифры, например 2754321 или RU2754321C1")
     params = {"DB": db, "DocNumber": digits, "TypeFile": "html"}
@@ -640,17 +648,19 @@ async def fips_get_document(number: str, kind: str = "invention") -> dict[str, A
 
 
 async def _rospatent_find_by_number(number: str) -> dict[str, Any]:
-    digits = re.sub(r"\D", "", number)
+    digits = _doc_digits(number)
     if not digits:
         raise SourceError("Номер должен содержать цифры")
     headers = _rospatent_headers(None)
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as c:
         hits: list[dict] = []
-        for q in (f"RU{digits}", digits):
+        for q in (f"PN=RU{digits}", f"DN={digits}", f"RU{digits}", digits):
             r = await c.post(f"{ROSPATENT_API}/search", headers=headers,
                              json={"q": q, "limit": 20, "datasets": ["ru_till_1994", "ru_since_1994"]})
+            if r.status_code in (401, 403):
+                raise SourceError(f"токен отклонён (HTTP {r.status_code})")
             if r.status_code >= 400:
-                raise SourceError(f"HTTP {r.status_code}")
+                continue  # вариант синтаксиса не поддержан — пробуем следующий
             hits = [h for h in r.json().get("hits", [])
                     if re.match(rf"(RU|SU){digits}[A-Z]", h.get("id", ""))]
             if hits:
