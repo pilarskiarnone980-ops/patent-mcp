@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: patent-mcp
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: MCP_PATH
+        sync: false
+      - key: ROSPATENT_TOKEN
+        sync: false

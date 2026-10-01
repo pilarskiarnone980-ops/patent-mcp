@@ -1,0 +1,6 @@
+# MCP SDK 2.0 (июль 2026) убрал mcp.server.fastmcp — фиксируем ветку 1.x
+mcp>=1.23,<2
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30
+httpx>=0.27,<1
+beautifulsoup4>=4.12
