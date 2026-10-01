@@ -23,6 +23,7 @@ Patent MCP Server — MCP-коннектор для ИИ-ассистента (C
 from __future__ import annotations
 
 import contextlib
+import html as html_lib
 import json
 import logging
 import os
@@ -89,6 +90,7 @@ def _clean(text: Any) -> str:
     if not isinstance(text, str):
         text = str(text)
     text = re.sub(r"<[^>]+>", " ", text)
+    text = html_lib.unescape(text)
     text = text.replace("\xa0", " ")
     return re.sub(r"\s+", " ", text).strip()
 
@@ -617,10 +619,53 @@ async def fips_get_document(number: str, kind: str = "invention") -> dict[str, A
     try:
         return await _fips_fetch(number, kind)
     except (SourceError, httpx.HTTPError) as e:
-        return _error("fips", str(e))
+        fips_error = str(e) or type(e).__name__
     except Exception as e:  # noqa: BLE001
         log.exception("fips_get_document")
-        return _error("fips", f"Непредвиденная ошибка: {type(e).__name__}: {e}")
+        fips_error = f"Непредвиденная ошибка: {type(e).__name__}"
+
+    # Запасной путь: ФИПС часто блокирует зарубежные IP — берём документ из API Роспатента
+    if not ROSPATENT_TOKEN:
+        return _error("fips", fips_error)
+    try:
+        doc = await _rospatent_find_by_number(number)
+        doc["warnings"] = [f"ФИПС недоступен с сервера ({fips_error}); данные из Поисковой платформы Роспатента. "
+                           "Статус действия патента смотрите на fips.ru."]
+        return doc
+    except (SourceError, httpx.HTTPError) as e2:
+        return _error("fips", f"ФИПС: {fips_error}; Роспатент: {e2}")
+    except Exception as e2:  # noqa: BLE001
+        log.exception("fips fallback")
+        return _error("fips", f"ФИПС: {fips_error}; Роспатент: {type(e2).__name__}")
+
+
+async def _rospatent_find_by_number(number: str) -> dict[str, Any]:
+    digits = re.sub(r"\D", "", number)
+    if not digits:
+        raise SourceError("Номер должен содержать цифры")
+    headers = _rospatent_headers(None)
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as c:
+        hits: list[dict] = []
+        for q in (f"RU{digits}", digits):
+            r = await c.post(f"{ROSPATENT_API}/search", headers=headers,
+                             json={"q": q, "limit": 20, "datasets": ["ru_till_1994", "ru_since_1994"]})
+            if r.status_code >= 400:
+                raise SourceError(f"HTTP {r.status_code}")
+            hits = [h for h in r.json().get("hits", [])
+                    if re.match(rf"(RU|SU){digits}[A-Z]", h.get("id", ""))]
+            if hits:
+                break
+        if not hits:
+            raise SourceError(f"документ {digits} не найден")
+        hits.sort(key=lambda h: h.get("id", ""), reverse=True)  # самая поздняя публикация
+        doc_id = hits[0]["id"]
+        r = await c.get(f"{ROSPATENT_API}/docs/{quote(doc_id)}", headers=headers)
+        d = r.json() if r.status_code == 200 else hits[0]
+    res = _normalize_rospatent_hit(d)
+    res["abstract"] = _clean(_dig(d, "abstract", "ru")) or res["abstract"]
+    res["claims"] = _clean(_dig(d, "claims", "ru"))[:6000]
+    res["other_publications"] = [h.get("id") for h in hits[1:]]
+    return {"ok": True, "source": "Поисковая платформа Роспатента (вместо ФИПС)", **res}
 
 
 @mcp.tool()
