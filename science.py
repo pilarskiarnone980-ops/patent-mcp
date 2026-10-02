@@ -67,7 +67,7 @@ class SourceError(Exception):
 def _clean(text: Any) -> str:
     if not text:
         return ""
-    text = str(text)
+    text = html_lib.unescape(str(text))
     text = re.sub(r"<[^>]+>", " ", text)
     text = html_lib.unescape(text).replace("\xa0", " ")
     return re.sub(r"\s+", " ", text).strip()
